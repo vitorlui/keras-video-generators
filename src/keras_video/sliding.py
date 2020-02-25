@@ -12,7 +12,7 @@ sequences for the same action.
 import os
 import numpy as np
 import cv2 as cv
-import keras.preprocessing.image
+from math import floor
 from .generator import VideoFrameGenerator
 
 
@@ -64,10 +64,11 @@ class SlidingFrameGenerator(VideoFrameGenerator):
 
     def __init_length(self):
         count = 0
+        print("Checking files to find possible sequences, please wait...")
         for filename in self.files:
             cap = cv.VideoCapture(filename)
             fps = cap.get(cv.CAP_PROP_FPS)
-            frame_count = cap.get(cv.CAP_PROP_FRAME_COUNT)
+            frame_count = self.count_frames(cap, filename)
             cap.release()
 
             if self.sequence_time is not None:
@@ -95,11 +96,6 @@ class SlidingFrameGenerator(VideoFrameGenerator):
 
     def on_epoch_end(self):
         # prepare transformation to avoid __getitem__ to reinitialize them
-        try:
-            self.vid_info
-        except Exception:
-            return
-
         if self.transformation is not None:
             self._random_trans = []
             for _ in range(len(self.vid_info)):
@@ -124,11 +120,27 @@ class SlidingFrameGenerator(VideoFrameGenerator):
             batch_size=self.batch_size,
             shuffle=self.shuffle,
             rescale=self.rescale,
+            glob_pattern=self.glob_pattern,
             _validation_data=self.validation)
+
+    def get_test_generator(self):
+        """ Return the validation generator if you've provided split factor """
+        return self.__class__(
+            sequence_time=self.sequence_time,
+            nb_frames=self.nbframe,
+            nb_channel=self.nb_channel,
+            target_shape=self.target_shape,
+            classes=self.classes,
+            batch_size=self.batch_size,
+            shuffle=self.shuffle,
+            rescale=self.rescale,
+            glob_pattern=self.glob_pattern,
+            _test_data=self.test)
 
     def __getitem__(self, idx):
         classes = self.classes
         shape = self.target_shape
+        nbframe = self.nbframe
 
         labels = []
         images = []
@@ -144,7 +156,7 @@ class SlidingFrameGenerator(VideoFrameGenerator):
 
             vid = self.vid_info[i]
             video = vid.get('name')
-            classname = video.split(os.sep)[-2]
+            classname = self._get_classname(video)
 
             # create a label array and set 1 to the right column
             label = np.zeros(len(classes))
@@ -152,36 +164,7 @@ class SlidingFrameGenerator(VideoFrameGenerator):
             label[col] = 1.
 
             if vid['id'] not in self.__frame_cache:
-                cap = cv.VideoCapture(video)
-                frames = []
-                while True:
-                    grabbed, frame = cap.read()
-                    if not grabbed:
-                        cap.release()
-                        break
-
-                    # resize
-                    frame = cv.resize(frame, shape)
-
-                    # use RGB or Grayscale ?
-                    if self.nb_channel == 3:
-                        frame = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
-                    else:
-                        frame = cv.cvtColor(frame, cv.COLOR_RGB2GRAY)
-
-                    # to np
-                    frame = keras.preprocessing.image.img_to_array(
-                        frame) * self.rescale
-
-                    # keep frame
-                    frames.append(frame)
-
-                frames = [frames[j] for j in vid.get('frames')]
-
-                # add to frame cache to not read from disk later
-                if self.use_frame_cache:
-                    self.__frame_cache[vid['id']] = frames
-
+                frames = self._get_frames(video, nbframe, shape)
             else:
                 frames = self.__frame_cache[vid['id']]
 
